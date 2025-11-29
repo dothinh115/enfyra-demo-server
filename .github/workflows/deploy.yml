@@ -1,0 +1,230 @@
+name: Deploy to VPS
+
+on:
+  # Chạy mỗi giờ để check upstream
+  schedule:
+    - cron: '0 * * * *'
+  # Chạy khi push vào main (merge PR)
+  push:
+    branches: [main]
+  # Cho phép chạy thủ công
+  workflow_dispatch:
+
+jobs:
+  check-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote if not exists
+        run: |
+          if ! git remote | grep -q upstream; then
+            echo "Adding upstream remote..."
+            git remote add upstream https://github.com/enfyra/backend.git
+          else
+            echo "Upstream remote already exists"
+          fi
+          git remote set-url upstream https://github.com/enfyra/backend.git
+          git fetch upstream
+
+      - name: Check for new commits in upstream beta/experimental
+        id: check-commits
+        run: |
+          git fetch upstream beta/experimental || git fetch upstream experimental || echo "Branch not found, trying beta/experimental"
+          
+          UPSTREAM_COMMIT=$(git rev-parse upstream/beta/experimental 2>/dev/null || git rev-parse upstream/experimental 2>/dev/null || echo "")
+          
+          if [ -z "$UPSTREAM_COMMIT" ]; then
+            echo "Could not find upstream branch beta/experimental or experimental"
+            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          
+          # Check if upstream has new commits by comparing merge-base
+          # If merge-base != upstream_commit, it means upstream has commits that current doesn't have
+          MERGE_BASE=$(git merge-base $CURRENT_COMMIT $UPSTREAM_COMMIT 2>/dev/null || echo "")
+          
+          if [ -z "$MERGE_BASE" ]; then
+            echo "Could not determine merge base, assuming no new commits"
+            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # If merge-base is not the same as upstream commit, there are new commits
+          if [ "$MERGE_BASE" != "$UPSTREAM_COMMIT" ]; then
+            echo "has_new_commits=true" >> $GITHUB_OUTPUT
+            echo "upstream_commit=$UPSTREAM_COMMIT" >> $GITHUB_OUTPUT
+            echo "current_commit=$CURRENT_COMMIT" >> $GITHUB_OUTPUT
+            echo "merge_base=$MERGE_BASE" >> $GITHUB_OUTPUT
+            echo "✅ Found new commits from upstream"
+          else
+            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+            echo "No new commits found (merge-base equals upstream commit)"
+          fi
+
+      - name: Pull and merge from upstream
+        if: steps.check-commits.outputs.has_new_commits == 'true'
+        run: |
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current branch: $CURRENT_BRANCH"
+          
+          git pull upstream beta/experimental || git pull upstream experimental || {
+            echo "Failed to pull from upstream"
+            exit 1
+          }
+          
+          git push origin $CURRENT_BRANCH || {
+            echo "Failed to push to origin"
+            exit 1
+          }
+          
+          echo "Successfully pulled and pushed new code from upstream"
+
+      - name: Install sshpass
+        if: steps.check-commits.outputs.has_new_commits == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Deploy to VPS via sshpass
+        if: steps.check-commits.outputs.has_new_commits == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+        run: |
+          sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_HOST << 'ENDSSH'
+            # Set project variables (FIXED: match ecosystem.config.js)
+            export PROJECT_NAME="demo-server"
+            export APP_DIR="/apps/demo-server"
+
+            # Setup PATH for tools
+            export PATH="$PATH:/usr/bin:/usr/local/bin:$HOME/.local/bin"
+
+            # Find tool paths
+            GIT_PATH=$(which git || echo "/usr/bin/git")
+            NPM_PATH=$(which npm || echo "/usr/bin/npm")
+            YARN_PATH=$(which yarn || echo "")
+            PM2_PATH=$(which pm2 || echo "$HOME/.local/bin/pm2")
+
+            # Install yarn if not found
+            if [ -z "$YARN_PATH" ]; then
+              echo "Yarn not found, installing..."
+              $NPM_PATH install -g yarn
+              YARN_PATH=$(which yarn || echo "$HOME/.local/bin/yarn")
+            fi
+
+            echo "=== Starting PM2 Deployment ==="
+            echo "Tools found:"
+            echo "Git: $GIT_PATH"
+            echo "NPM: $NPM_PATH"
+            echo "Yarn: $YARN_PATH"
+            echo "PM2: $PM2_PATH"
+
+            # Navigate to app directory
+            cd $APP_DIR
+            echo "Current directory: $(pwd)"
+
+            # Fix git safe.directory issue
+            echo "Configuring git safe.directory..."
+            $GIT_PATH config --global --add safe.directory $APP_DIR || true
+
+            # Pull latest code with conflict resolution
+            echo "Pulling latest code..."
+            # Stash any local changes to avoid conflicts
+            $GIT_PATH stash || true
+            # Fetch latest from origin
+            $GIT_PATH fetch origin main
+            # Reset to origin/main (discard local changes)
+            $GIT_PATH reset --hard origin/main
+            # Clean untracked files
+            $GIT_PATH clean -fd
+            echo "✅ Code updated to latest from git (local changes discarded)"
+
+            # Install dependencies with yarn
+            echo "Installing dependencies with yarn..."
+            $YARN_PATH install --frozen-lockfile
+
+            # Setup environment file
+            echo "Setting up environment..."
+            if [ ! -f .env ]; then
+              echo "⚠️  .env file not found! Creating from template..."
+              cp env_example .env || echo "env_example not found, manual .env setup required"
+            fi
+
+            # Build application
+            echo "Building application..."
+            $YARN_PATH build
+
+            # Stop PM2 application completely to avoid conflicts
+            echo "Stopping PM2 application..."
+            $PM2_PATH stop $PROJECT_NAME || true
+            $PM2_PATH delete $PROJECT_NAME || true
+
+            # Clean start PM2 application
+            echo "Starting PM2 application clean..."
+            $PM2_PATH start ecosystem.config.js
+
+            # Wait for app to initialize
+            echo "Waiting for app to initialize..."
+            sleep 10
+
+            # Show PM2 status
+            $PM2_PATH status
+
+            # Health check
+            echo "=== Health Check ==="
+            sleep 5
+            if $PM2_PATH show $PROJECT_NAME | grep -q "online"; then
+              echo "✅ Application is running successfully"
+            else
+              echo "❌ Application failed to start"
+              $PM2_PATH logs $PROJECT_NAME --lines 20 --nostream
+              exit 1
+            fi
+
+            # Show logs without tailing (just print and exit)
+            echo "=== Recent logs ==="
+            $PM2_PATH logs $PROJECT_NAME --lines 30 --nostream || {
+              echo "Using alternative log method..."
+              timeout 3s $PM2_PATH logs $PROJECT_NAME --lines 30 || true
+            }
+
+            echo "=== PM2 Deployment completed successfully ==="
+          ENDSSH
+
+      - name: Deploy notification
+        if: steps.check-commits.outputs.has_new_commits == 'true'
+        run: |
+          echo "✅ Successfully deployed new code from upstream beta/experimental"
+          echo "Upstream commit: ${{ steps.check-commits.outputs.upstream_commit }}"
+          echo "Previous commit: ${{ steps.check-commits.outputs.current_commit }}"
+
+      - name: Push notification
+        if: github.event_name == 'push' && steps.check-commits.outputs.has_new_commits != 'true'
+        run: |
+          echo "✅ Deployed code from main branch push"
+
+      - name: Manual deploy notification
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "✅ Deployed code from manual workflow dispatch"
+
+      - name: No updates notification
+        if: steps.check-commits.outputs.has_new_commits == 'false' && github.event_name == 'schedule'
+        run: |
+          echo "ℹ️ No new code from upstream, skipping deployment"
+

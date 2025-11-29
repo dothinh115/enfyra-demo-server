@@ -25,6 +25,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config pull.rebase false  # Use merge strategy
 
       - name: Add upstream remote if not exists
         run: |
@@ -40,15 +41,29 @@ jobs:
       - name: Check for new commits in upstream beta/experimental
         id: check-commits
         run: |
-          git fetch upstream beta/experimental || git fetch upstream experimental || echo "Branch not found, trying beta/experimental"
+          # Try to find which branch exists
+          UPSTREAM_BRANCH=""
+          UPSTREAM_COMMIT=""
           
-          UPSTREAM_COMMIT=$(git rev-parse upstream/beta/experimental 2>/dev/null || git rev-parse upstream/experimental 2>/dev/null || echo "")
+          # Try beta/experimental first
+          if git fetch upstream beta/experimental 2>/dev/null; then
+            UPSTREAM_BRANCH="beta/experimental"
+            UPSTREAM_COMMIT=$(git rev-parse upstream/beta/experimental 2>/dev/null || echo "")
+          # Try experimental if beta/experimental doesn't exist
+          elif git fetch upstream experimental 2>/dev/null; then
+            UPSTREAM_BRANCH="experimental"
+            UPSTREAM_COMMIT=$(git rev-parse upstream/experimental 2>/dev/null || echo "")
+          fi
           
-          if [ -z "$UPSTREAM_COMMIT" ]; then
+          if [ -z "$UPSTREAM_COMMIT" ] || [ -z "$UPSTREAM_BRANCH" ]; then
             echo "Could not find upstream branch beta/experimental or experimental"
             echo "has_new_commits=false" >> $GITHUB_OUTPUT
+            echo "upstream_branch=" >> $GITHUB_OUTPUT
             exit 0
           fi
+          
+          echo "Found upstream branch: $UPSTREAM_BRANCH"
+          echo "upstream_branch=$UPSTREAM_BRANCH" >> $GITHUB_OUTPUT
           
           CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           CURRENT_COMMIT=$(git rev-parse HEAD)
@@ -79,10 +94,19 @@ jobs:
         if: steps.check-commits.outputs.has_new_commits == 'true'
         run: |
           CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          echo "Current branch: $CURRENT_BRANCH"
+          UPSTREAM_BRANCH="${{ steps.check-commits.outputs.upstream_branch }}"
           
-          git pull upstream beta/experimental || git pull upstream experimental || {
-            echo "Failed to pull from upstream"
+          echo "Current branch: $CURRENT_BRANCH"
+          echo "Upstream branch: $UPSTREAM_BRANCH"
+          
+          if [ -z "$UPSTREAM_BRANCH" ]; then
+            echo "❌ Upstream branch not found, cannot pull"
+            exit 1
+          fi
+          
+          # Pull with merge strategy (already configured)
+          git pull --no-rebase upstream "$UPSTREAM_BRANCH" || {
+            echo "Failed to pull from upstream $UPSTREAM_BRANCH"
             exit 1
           }
           
@@ -91,7 +115,7 @@ jobs:
             exit 1
           }
           
-          echo "Successfully pulled and pushed new code from upstream"
+          echo "✅ Successfully pulled and pushed new code from upstream $UPSTREAM_BRANCH"
 
       - name: Install sshpass
         if: steps.check-commits.outputs.has_new_commits == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'

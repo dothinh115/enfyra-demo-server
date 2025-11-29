@@ -13,6 +13,9 @@ on:
 jobs:
   check-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push to repository
+      pull-requests: read
     
     steps:
       - name: Checkout code
@@ -20,6 +23,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true  # Keep credentials for push
 
       - name: Configure Git
         run: |
@@ -92,6 +96,8 @@ jobs:
 
       - name: Pull and merge from upstream
         if: steps.check-commits.outputs.has_new_commits == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           UPSTREAM_BRANCH="${{ steps.check-commits.outputs.upstream_branch }}"
@@ -109,6 +115,9 @@ jobs:
             echo "Failed to pull from upstream $UPSTREAM_BRANCH"
             exit 1
           }
+          
+          # Configure remote URL with token for push
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
           
           git push origin $CURRENT_BRANCH || {
             echo "Failed to push to origin"

@@ -39,11 +39,11 @@ jobs:
         run: |
           if ! git remote | grep -q upstream; then
             echo "Adding upstream remote..."
-            git remote add upstream https://github.com/enfyra/backend.git
+            git remote add upstream https://github.com/enfyra/server.git
           else
             echo "Upstream remote already exists"
           fi
-          git remote set-url upstream https://github.com/enfyra/backend.git
+          git remote set-url upstream https://github.com/enfyra/server.git
           git fetch upstream
 
       - name: Check for new commits in upstream main
@@ -102,7 +102,7 @@ jobs:
           fi
           
           # Pull with merge strategy (already configured)
-          git pull --no-rebase upstream "$UPSTREAM_BRANCH" || {
+          git pull --no-rebase --allow-unrelated-histories upstream "$UPSTREAM_BRANCH" || {
             echo "Failed to pull from upstream $UPSTREAM_BRANCH"
             exit 1
           }

@@ -1,21 +1,23 @@
 name: Deploy to VPS
 
 on:
-  # Chạy mỗi giờ để check upstream
   schedule:
     - cron: '0 * * * *'
-  # Chạy khi push vào main (merge PR)
   push:
     branches: [main]
-  # Cho phép chạy thủ công
   workflow_dispatch:
 
 jobs:
   check-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Required to push to repository
+      contents: write 
       pull-requests: read
+    
+    outputs:
+      should_notify: ${{ steps.set_notify_flag.outputs.should_notify }}
+      deploy_status: ${{ steps.set_notify_flag.outputs.deploy_status }}
+      deploy_reason: ${{ steps.set_notify_flag.outputs.deploy_reason }}
     
     steps:
       - name: Checkout code
@@ -23,7 +25,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-          persist-credentials: true  # Keep credentials for push
+          persist-credentials: true  
 
       - name: Configure Git
         run: |
@@ -88,7 +90,7 @@ jobs:
             echo "upstream_commit=$UPSTREAM_COMMIT" >> $GITHUB_OUTPUT
             echo "current_commit=$CURRENT_COMMIT" >> $GITHUB_OUTPUT
             echo "merge_base=$MERGE_BASE" >> $GITHUB_OUTPUT
-            echo "✅ Found new commits from upstream"
+            echo "Found new commits from upstream"
           else
             echo "has_new_commits=false" >> $GITHUB_OUTPUT
             echo "No new commits found (merge-base equals upstream commit)"
@@ -106,7 +108,7 @@ jobs:
           echo "Upstream branch: $UPSTREAM_BRANCH"
           
           if [ -z "$UPSTREAM_BRANCH" ]; then
-            echo "❌ Upstream branch not found, cannot pull"
+            echo "Upstream branch not found, cannot pull"
             exit 1
           fi
           
@@ -124,7 +126,7 @@ jobs:
             exit 1
           }
           
-          echo "✅ Successfully pulled and pushed new code from upstream $UPSTREAM_BRANCH"
+          echo "Successfully pulled and pushed new code from upstream $UPSTREAM_BRANCH"
 
       - name: Install sshpass
         if: steps.check-commits.outputs.has_new_commits == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -185,7 +187,7 @@ jobs:
             $GIT_PATH reset --hard origin/main
             # Clean untracked files
             $GIT_PATH clean -fd
-            echo "✅ Code updated to latest from git (local changes discarded)"
+            echo "Code updated to latest from git (local changes discarded)"
 
             # Install dependencies with yarn
             echo "Installing dependencies with yarn..."
@@ -194,7 +196,7 @@ jobs:
             # Setup environment file
             echo "Setting up environment..."
             if [ ! -f .env ]; then
-              echo "⚠️  .env file not found! Creating from template..."
+              echo ".env file not found! Creating from template..."
               cp env_example .env || echo "env_example not found, manual .env setup required"
             fi
 
@@ -222,9 +224,9 @@ jobs:
             echo "=== Health Check ==="
             sleep 5
             if $PM2_PATH show $PROJECT_NAME | grep -q "online"; then
-              echo "✅ Application is running successfully"
+              echo "Application is running successfully"
             else
-              echo "❌ Application failed to start"
+              echo "Application failed to start"
               $PM2_PATH logs $PROJECT_NAME --lines 20 --nostream
               exit 1
             fi
@@ -239,25 +241,64 @@ jobs:
             echo "=== PM2 Deployment completed successfully ==="
           ENDSSH
 
+      - name: Set notification flag
+        id: set_notify_flag
+        if: always()  
+        run: |
+          # Kiểm tra xem có deploy thực sự hay không
+          SHOULD_NOTIFY="false"
+          DEPLOY_STATUS="skipped"
+          DEPLOY_REASON="No changes detected"
+          
+          # Case 1: Có new commits từ upstream
+          if [ "${{ steps.check-commits.outputs.has_new_commits }}" == "true" ]; then
+            SHOULD_NOTIFY="true"
+            DEPLOY_STATUS="success"
+            DEPLOY_REASON="New commits from upstream"
+          # Case 2: Manual push vào main
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            SHOULD_NOTIFY="true"
+            DEPLOY_STATUS="success"
+            DEPLOY_REASON="Manual push to main"
+          # Case 3: Manual workflow dispatch
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            SHOULD_NOTIFY="true"
+            DEPLOY_STATUS="success"
+            DEPLOY_REASON="Manual workflow dispatch"
+          fi
+          
+          # Nếu job failed, vẫn notify
+          if [ "${{ job.status }}" == "failure" ]; then
+            SHOULD_NOTIFY="true"
+            DEPLOY_STATUS="failed"
+          fi
+          
+          echo "should_notify=$SHOULD_NOTIFY" >> $GITHUB_OUTPUT
+          echo "deploy_status=$DEPLOY_STATUS" >> $GITHUB_OUTPUT
+          echo "deploy_reason=$DEPLOY_REASON" >> $GITHUB_OUTPUT
+          
+          echo "Notification flag: $SHOULD_NOTIFY"
+          echo "Deploy status: $DEPLOY_STATUS"
+          echo "Deploy reason: $DEPLOY_REASON"
+
       - name: Deploy notification
         if: steps.check-commits.outputs.has_new_commits == 'true'
         run: |
-          echo "✅ Successfully deployed new code from upstream beta/experimental"
+          echo "Successfully deployed new code from upstream beta/experimental"
           echo "Upstream commit: ${{ steps.check-commits.outputs.upstream_commit }}"
           echo "Previous commit: ${{ steps.check-commits.outputs.current_commit }}"
 
       - name: Push notification
         if: github.event_name == 'push' && steps.check-commits.outputs.has_new_commits != 'true'
         run: |
-          echo "✅ Deployed code from main branch push"
+          echo "Deployed code from main branch push"
 
       - name: Manual deploy notification
         if: github.event_name == 'workflow_dispatch'
         run: |
-          echo "✅ Deployed code from manual workflow dispatch"
+          echo "Deployed code from manual workflow dispatch"
 
       - name: No updates notification
         if: steps.check-commits.outputs.has_new_commits == 'false' && github.event_name == 'schedule'
         run: |
           echo "ℹ️ No new code from upstream, skipping deployment"
-

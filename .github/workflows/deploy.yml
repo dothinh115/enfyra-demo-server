@@ -100,12 +100,10 @@ jobs:
             echo "Upstream branch not found, cannot pull"
             exit 1
           fi
-          
-          # Pull with merge strategy (already configured)
-          git pull --no-rebase --allow-unrelated-histories upstream "$UPSTREAM_BRANCH" || {
-            echo "Failed to pull from upstream $UPSTREAM_BRANCH"
-            exit 1
-          }
+
+          # Hard-sync with upstream/main to avoid merge conflicts
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git reset --hard "upstream/$UPSTREAM_BRANCH"
           
           # Configure remote URL with token for push
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git

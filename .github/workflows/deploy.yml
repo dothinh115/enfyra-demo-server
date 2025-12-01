@@ -46,25 +46,23 @@ jobs:
           git remote set-url upstream https://github.com/enfyra/backend.git
           git fetch upstream
 
-      - name: Check for new commits in upstream beta/experimental
+      - name: Check for new commits in upstream main
         id: check-commits
         run: |
-          # Try to find which branch exists
-          UPSTREAM_BRANCH=""
-          UPSTREAM_COMMIT=""
-          
-          # Try beta/experimental first
-          if git fetch upstream beta/experimental 2>/dev/null; then
-            UPSTREAM_BRANCH="beta/experimental"
-            UPSTREAM_COMMIT=$(git rev-parse upstream/beta/experimental 2>/dev/null || echo "")
-          # Try experimental if beta/experimental doesn't exist
-          elif git fetch upstream experimental 2>/dev/null; then
-            UPSTREAM_BRANCH="experimental"
-            UPSTREAM_COMMIT=$(git rev-parse upstream/experimental 2>/dev/null || echo "")
+          # Always track upstream main
+          UPSTREAM_BRANCH="main"
+
+          if ! git fetch upstream "$UPSTREAM_BRANCH" 2>/dev/null; then
+            echo "Could not fetch upstream main"
+            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+            echo "upstream_branch=" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
-          if [ -z "$UPSTREAM_COMMIT" ] || [ -z "$UPSTREAM_BRANCH" ]; then
-            echo "Could not find upstream branch beta/experimental or experimental"
+          UPSTREAM_COMMIT=$(git rev-parse upstream/main 2>/dev/null || echo "")
+          
+          if [ -z "$UPSTREAM_COMMIT" ]; then
+            echo "Could not resolve upstream main commit"
             echo "has_new_commits=false" >> $GITHUB_OUTPUT
             echo "upstream_branch=" >> $GITHUB_OUTPUT
             exit 0
@@ -272,7 +270,7 @@ jobs:
       - name: Deploy notification
         if: steps.check-commits.outputs.has_new_commits == 'true'
         run: |
-          echo "Successfully deployed new code from upstream beta/experimental"
+          echo "Successfully deployed new code from upstream main"
           echo "Upstream commit: ${{ steps.check-commits.outputs.upstream_commit }}"
           echo "Previous commit: ${{ steps.check-commits.outputs.current_commit }}"
 

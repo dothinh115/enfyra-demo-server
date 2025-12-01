@@ -3,13 +3,14 @@ on:
   workflow_run:
     workflows: ["Deploy to VPS"]  
     types: [completed]
+
 jobs:
   notify:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.head_branch == 'main' }}
     steps:
-      - name: Check if deployment was skipped
-        id: check_skip
+      - name: Get deploy workflow outputs
+        id: get_outputs
         uses: actions/github-script@v7
         with:
           script: |
@@ -24,35 +25,39 @@ jobs:
                 run_id: runId,
               });
               
-              // Check if any job log contains "Skipping redeploy" or "No new commits"
-              for (const job of jobs.data.jobs) {
-                try {
-                  const logs = await github.rest.actions.downloadJobLogsForWorkflowRun({
-                    owner,
-                    repo,
-                    job_id: job.id,
-                  });
-                  
-                  const logText = logs.data.toString();
-                  
-                  if (logText.includes('Skipping redeploy') || 
-                      logText.includes('No new commits detected')) {
-                    console.log('Deployment was skipped - no notification needed');
-                    return 'true';
-                  }
-                } catch (e) {
-                  console.log(`Could not get logs for job ${job.id}`);
-                }
+              const deployJob = jobs.data.jobs.find(job => job.name === 'check-and-deploy');
+              
+              if (!deployJob) {
+                console.log('Deploy job not found');
+                return {
+                  should_notify: 'false',
+                  deploy_status: 'unknown',
+                  deploy_reason: 'Job not found'
+                };
               }
               
-              return 'false';
+              // Get outputs from the job steps
+              const outputs = deployJob.outputs || {};
+              
+              const result = {
+                should_notify: outputs.should_notify || 'false',
+                deploy_status: outputs.deploy_status || 'unknown',
+                deploy_reason: outputs.deploy_reason || 'N/A'
+              };
+              
+              console.log('Deploy outputs:', result);
+              return result;
             } catch (error) {
-              console.log('Error checking logs:', error);
-              return 'false';
+              console.log('Error getting outputs:', error.message);
+              return {
+                should_notify: 'false',
+                deploy_status: 'error',
+                deploy_reason: 'Failed to get outputs'
+              };
             }
       
       - name: Get workflow logs if failed
-        if: ${{ steps.check_skip.outputs.result == 'false' && github.event.workflow_run.conclusion == 'failure' }}
+        if: ${{ fromJson(steps.get_outputs.outputs.result).should_notify == 'true' && github.event.workflow_run.conclusion == 'failure' }}
         id: get_logs
         uses: actions/github-script@v7
         with:
@@ -101,7 +106,7 @@ jobs:
             }
       
       - name: Send Discord notification
-        if: ${{ steps.check_skip.outputs.result == 'false' }}
+        if: ${{ fromJson(steps.get_outputs.outputs.result).should_notify == 'true' }}
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ACTION: ${{ github.event.action }}
@@ -113,14 +118,18 @@ jobs:
           PUSHER: ${{ github.event.workflow_run.head_commit.author.name || github.event.workflow_run.actor.login || github.actor }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DEPLOY_STATUS: ${{ fromJson(steps.get_outputs.outputs.result).deploy_status }}
+          DEPLOY_REASON: ${{ fromJson(steps.get_outputs.outputs.result).deploy_reason }}
           ERROR_LOGS: ${{ steps.get_logs.outputs.result || '' }}
         run: |
           if [ -z "$DISCORD_WEBHOOK" ]; then
-            echo "❌ ERROR: DISCORD_WEBHOOK_URL secret is not set"
+            echo "ERROR: DISCORD_WEBHOOK_URL secret is not set"
             exit 1
           fi
           
-          echo "🔔 Sending Discord notification..."
+          echo "Sending Discord notification..."
+          echo "Deploy Status: $DEPLOY_STATUS"
+          echo "Deploy Reason: $DEPLOY_REASON"
           
           cat > /tmp/notify.py <<'PYTHON_SCRIPT'
           import os, json, datetime, sys
@@ -134,16 +143,18 @@ jobs:
           pusher = os.getenv("PUSHER", "N/A")
           run_id = os.getenv("RUN_ID", "N/A")
           conclusion = os.getenv("CONCLUSION", "")
+          deploy_status = os.getenv("DEPLOY_STATUS", "unknown")
+          deploy_reason = os.getenv("DEPLOY_REASON", "N/A")
           error_logs = os.getenv("ERROR_LOGS", "")
           
           if conclusion == "success":
               state = "✅ SUCCESS"
               color = 3066993
-              status_text = "🚀 Enfyra Demo Server deployed successfully"
+              status_text = f"🚀 Enfyra Demo Server deployed successfully\n**Reason:** {deploy_reason}"
           elif conclusion == "failure":
               state = "❌ FAILED"
               color = 15158332
-              status_text = "⚠️ Enfyra Demo Server deployment failed"
+              status_text = f"⚠️ Enfyra Demo Server deployment failed\n**Reason:** {deploy_reason}"
           elif conclusion == "cancelled":
               state = "⚠️ CANCELLED"
               color = 16776960
@@ -207,3 +218,10 @@ jobs:
             cat /tmp/discord_response.txt
             exit 1
           fi
+      
+      - name: Skip notification log
+        if: ${{ fromJson(steps.get_outputs.outputs.result).should_notify == 'false' }}
+        run: |
+          echo "ℹ️ No deployment occurred - skipping Discord notification"
+          echo "Deploy Status: ${{ fromJson(steps.get_outputs.outputs.result).deploy_status }}"
+          echo "Deploy Reason: ${{ fromJson(steps.get_outputs.outputs.result).deploy_reason }}"

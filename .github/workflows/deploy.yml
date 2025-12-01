@@ -74,26 +74,15 @@ jobs:
           CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           CURRENT_COMMIT=$(git rev-parse HEAD)
           
-          # Check if upstream has new commits by comparing merge-base
-          # If merge-base != upstream_commit, it means upstream has commits that current doesn't have
-          MERGE_BASE=$(git merge-base $CURRENT_COMMIT $UPSTREAM_COMMIT 2>/dev/null || echo "")
-          
-          if [ -z "$MERGE_BASE" ]; then
-            echo "Could not determine merge base, assuming no new commits"
-            echo "has_new_commits=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # If merge-base is not the same as upstream commit, there are new commits
-          if [ "$MERGE_BASE" != "$UPSTREAM_COMMIT" ]; then
+          # Simple rule: if current commit differs from upstream/main, treat as new changes
+          if [ "$CURRENT_COMMIT" != "$UPSTREAM_COMMIT" ]; then
             echo "has_new_commits=true" >> $GITHUB_OUTPUT
             echo "upstream_commit=$UPSTREAM_COMMIT" >> $GITHUB_OUTPUT
             echo "current_commit=$CURRENT_COMMIT" >> $GITHUB_OUTPUT
-            echo "merge_base=$MERGE_BASE" >> $GITHUB_OUTPUT
-            echo "Found new commits from upstream"
+            echo "Found new commits from upstream main (commit mismatch)"
           else
             echo "has_new_commits=false" >> $GITHUB_OUTPUT
-            echo "No new commits found (merge-base equals upstream commit)"
+            echo "No new commits found (HEAD equals upstream/main)"
           fi
 
       - name: Pull and merge from upstream
@@ -231,17 +220,17 @@ jobs:
         id: set_notify_flag
         if: always()  
         run: |
-          # Kiểm tra xem có deploy thực sự hay không
+          # Check whether a deployment actually happened
           SHOULD_NOTIFY="false"
           DEPLOY_STATUS="skipped"
           DEPLOY_REASON="No changes detected"
           
-          # Case 1: Có new commits từ upstream
+          # Case 1: New commits from upstream
           if [ "${{ steps.check-commits.outputs.has_new_commits }}" == "true" ]; then
             SHOULD_NOTIFY="true"
             DEPLOY_STATUS="success"
             DEPLOY_REASON="New commits from upstream"
-          # Case 2: Manual push vào main
+          # Case 2: Manual push to main
           elif [ "${{ github.event_name }}" == "push" ]; then
             SHOULD_NOTIFY="true"
             DEPLOY_STATUS="success"
@@ -253,7 +242,7 @@ jobs:
             DEPLOY_REASON="Manual workflow dispatch"
           fi
           
-          # Nếu job failed, vẫn notify
+          # Always notify if the job failed
           if [ "${{ job.status }}" == "failure" ]; then
             SHOULD_NOTIFY="true"
             DEPLOY_STATUS="failed"

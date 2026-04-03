@@ -18,6 +18,7 @@ import { validateUniquePropertyNames } from '../utils/duplicate-field-check';
 import { getDeletedIds } from '../utils/get-deleted-ids';
 import { CreateTableDto } from '../dto/create-table.dto';
 import { generateDefaultRecord } from '../utils/generate-default-record';
+import { DEFAULT_REST_HANDLER_LOGIC } from '../../../core/bootstrap/utils/canonical-table-route.util';
 @Injectable()
 export class MongoTableHandlerService {
   private logger = new Logger(MongoTableHandlerService.name);
@@ -386,7 +387,7 @@ export class MongoTableHandlerService {
           fields: ['id'],
         });
         const allMethodIds = (methodsResult.data || []).map((m: any) => m._id ?? m.id);
-        await this.queryBuilder.insert({
+        const insertedRoute = await this.queryBuilder.insert({
           table: 'route_definition',
           data: {
             path: `/${body.name}`,
@@ -402,6 +403,23 @@ export class MongoTableHandlerService {
             postHooks: [],
           },
         });
+        const newRouteId = insertedRoute?.data?.[0]?._id ?? insertedRoute?.data?.[0]?.id;
+        if (newRouteId) {
+          const allMethods = (methodsResult.data || []);
+          for (const m of allMethods) {
+            const methodName = m.method;
+            if (!DEFAULT_REST_HANDLER_LOGIC[methodName]) continue;
+            await this.queryBuilder.insert({
+              table: 'route_handler_definition',
+              data: {
+                route: newRouteId,
+                method: m._id ?? m.id,
+                logic: DEFAULT_REST_HANDLER_LOGIC[methodName],
+                timeout: 30000,
+              },
+            });
+          }
+        }
       }
       const fullMetadata = await this.getFullTableMetadata(tableId);
       await this.schemaMigrationService.createCollection(fullMetadata);

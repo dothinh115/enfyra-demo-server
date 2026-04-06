@@ -1,7 +1,7 @@
 import { Request } from 'express';
 import { randomUUID } from 'crypto';
 import { ObjectId } from 'mongodb';
-import * as ms from 'ms';
+import ms = require('ms');
 
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -27,7 +27,7 @@ export class AuthService {
     const expiryConfig = remember
       ? this.configService.get<string>('REFRESH_TOKEN_REMEMBER_EXP')
       : this.configService.get<string>('REFRESH_TOKEN_NO_REMEMBER_EXP');
-    const expiryMs = ms(expiryConfig);
+    const expiryMs = ms(expiryConfig as ms.StringValue);
     return new Date(Date.now() + expiryMs);
   }
 
@@ -75,7 +75,7 @@ export class AuthService {
         loginProvider: null,
       },
       {
-        expiresIn: this.configService.get<string>('ACCESS_TOKEN_EXP'),
+        expiresIn: this.configService.get<string>('ACCESS_TOKEN_EXP') as ms.StringValue,
       },
     );
     const refreshToken = this.jwtService.sign(
@@ -83,9 +83,9 @@ export class AuthService {
         sessionId: sessionId,
       },
       {
-        expiresIn: body.remember
+        expiresIn: (body.remember
           ? this.configService.get<string>('REFRESH_TOKEN_REMEMBER_EXP')
-          : this.configService.get<string>('REFRESH_TOKEN_NO_REMEMBER_EXP'),
+          : this.configService.get<string>('REFRESH_TOKEN_NO_REMEMBER_EXP')) as ms.StringValue,
       },
     );
     const decoded: any = this.jwtService.decode(accessToken);
@@ -164,17 +164,17 @@ export class AuthService {
         loginProvider,
       },
       {
-        expiresIn: this.configService.get<string>('ACCESS_TOKEN_EXP'),
+        expiresIn: this.configService.get<string>('ACCESS_TOKEN_EXP') as ms.StringValue,
       },
     );
-    
+
     const refreshToken = remember
       ? this.jwtService.sign(
           { sessionId: sessionId },
           {
             expiresIn: this.configService.get<string>(
               'REFRESH_TOKEN_REMEMBER_EXP',
-            ),
+            ) as ms.StringValue,
           },
         )
       : body.refreshToken;

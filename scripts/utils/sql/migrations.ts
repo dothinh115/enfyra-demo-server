@@ -204,6 +204,10 @@ export async function applyColumnMigrations(
               await knex.raw(`ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" DROP DEFAULT`);
             }
 
+            try {
+              await knex.raw(`ALTER TABLE "${tableName}" DROP CONSTRAINT IF EXISTS "${tableName}_${col.name}_check"`);
+            } catch (e) {}
+
             if (currentType !== 'text') {
               await knex.raw(`ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" TYPE text USING "${col.name}"::text`);
             }
@@ -340,9 +344,16 @@ export async function applyColumnMigrations(
                   `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" SET DEFAULT ${def ? 'true' : 'false'}`,
                 );
               } else if (typeof col.defaultValue === 'string') {
-                await knex.raw(
-                  `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" SET DEFAULT '${col.defaultValue.replace(/'/g, "''")}'`,
-                );
+                const sqlFunctions = ['now', 'current_timestamp', 'current_date', 'current_time'];
+                if (sqlFunctions.includes(col.defaultValue.toLowerCase())) {
+                  await knex.raw(
+                    `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" SET DEFAULT ${col.defaultValue}()`,
+                  );
+                } else {
+                  await knex.raw(
+                    `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" SET DEFAULT '${col.defaultValue.replace(/'/g, "''")}'`,
+                  );
+                }
               } else {
                 await knex.raw(
                   `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" SET DEFAULT ${col.defaultValue}`,
@@ -350,6 +361,7 @@ export async function applyColumnMigrations(
               }
             } catch (e) {}
           }
+          if (changes.includes('type')) {
           const knexType = getKnexColumnType(col);
         const currentTypeResult = await knex.raw(`
           SELECT data_type, udt_name
@@ -388,6 +400,7 @@ export async function applyColumnMigrations(
           }
       });
         }
+          }
         if (changes.includes('nullable')) {
           if (col.isNullable === false) {
             await knex.raw(`ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" SET NOT NULL`);
@@ -420,32 +433,44 @@ export async function applyRelationMigrations(
         console.log(`    + ${fkColumn} → ${rel.targetTable}.id`);
         const targetPkType = getPrimaryKeyType(schemas, rel.targetTable);
         const dbType = knex.client.config.client;
-        await knex.schema.alterTable(tableName, (table) => {
-          let col;
-          if (targetPkType === 'uuid') {
-            if (dbType === 'pg') {
-              col = table.uuid(fkColumn);
-            } else {
-              col = table.string(fkColumn, 36);
-            }
-          } else {
-            col = table.integer(fkColumn).unsigned();
+        try {
+          const hasCol = await knex.schema.hasColumn(tableName, fkColumn);
+          if (!hasCol) {
+            await knex.schema.alterTable(tableName, (table) => {
+              let col;
+              if (targetPkType === 'uuid') {
+                if (dbType === 'pg') {
+                  col = table.uuid(fkColumn);
+                } else {
+                  col = table.string(fkColumn, 36);
+                }
+              } else {
+                col = table.integer(fkColumn).unsigned();
+              }
+              if (rel.isNullable === false) {
+                col.notNullable();
+              } else {
+                col.nullable();
+              }
+            });
           }
-          if (rel.isNullable === false) {
-            col.notNullable();
+          await knex.schema.alterTable(tableName, (table) => {
+            const fk = table
+              .foreign(fkColumn)
+              .references('id')
+              .inTable(rel.targetTable);
+            const onDeleteAction = (rel as any).onDelete || 'SET NULL';
+            fk.onDelete(onDeleteAction).onUpdate('CASCADE');
+            table.index([fkColumn]);
+          });
+        } catch (error) {
+          const msg = (error?.message || '').toLowerCase();
+          if (msg.includes('already exists') || msg.includes('duplicate')) {
+            console.log(`    ⏩ Relation ${fkColumn} already exists on ${tableName}`);
           } else {
-            col.nullable();
+            console.error(`    ❌ Failed to add relation ${fkColumn} on ${tableName}:`, error.message);
           }
-        });
-        await knex.schema.alterTable(tableName, (table) => {
-          const fk = table
-            .foreign(fkColumn)
-            .references('id')
-            .inTable(rel.targetTable);
-          const onDeleteAction = (rel as any).onDelete || 'SET NULL';
-          fk.onDelete(onDeleteAction).onUpdate('CASCADE');
-          table.index([fkColumn]);
-        });
+        }
       }
     }
   }

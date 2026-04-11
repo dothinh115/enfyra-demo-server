@@ -66,7 +66,12 @@ export async function addForeignKeys(
         table.index([fkOp.foreignKeyColumn]);
       });
     } catch (error) {
-      console.log(`  ⚠️ FK constraint already exists: ${fkOp.tableName}.${fkOp.foreignKeyColumn}`);
+      const msg = (error?.message || '').toLowerCase();
+      if (msg.includes('already exists') || msg.includes('duplicate')) {
+        console.log(`  ⏩ FK already exists: ${fkOp.tableName}.${fkOp.foreignKeyColumn}`);
+      } else {
+        console.error(`  ❌ Failed to add FK ${fkOp.tableName}.${fkOp.foreignKeyColumn}:`, error.message);
+      }
     }
   }
 
